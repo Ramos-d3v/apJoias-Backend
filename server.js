@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
-const { Pool } = require('pg');
+const { Pool } = require('pg'); // Usando PostgreSQL
 const path = require('path');
 const multer = require('multer');
 const fs = require('fs');
@@ -11,31 +11,38 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit'); 
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 const SECRET_KEY = process.env.SECRET_KEY;
 const REMOVE_BG_API_KEY = process.env.VITE_REMOVE_BG_API_KEY;
 
 // --- CONFIGURAÇÃO DO LIMITE DE FOTOS ---
-const LIMITE_FOTOS = 25; // Altere este número para 50 quando quiser aumentar
+const LIMITE_FOTOS = 25; 
 
 if (!SECRET_KEY) {
   console.error("⚠️ ALERTA: SECRET_KEY não encontrada no arquivo .env!");
   process.exit(1);
 }
 
-app.use(helmet()); 
+// 🛡️ Segurança de Headers e CORS
+// 🛡️ Segurança de Headers e CORS (Ajustado para HTTP/IP)
+app.use(helmet({
+  crossOriginOpenerPolicy: false,
+  originAgentCluster: false,
+})); 
 app.use(helmet.crossOriginResourcePolicy({ policy: "cross-origin" }));
 app.use(cors());
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+// 🛡️ Bloqueio de Força Bruta no Login
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, 
   max: 5, 
   message: { error: 'Muitas tentativas de login falhas. Tente novamente em 15 minutos.' }
 });
 
+// 🛡️ Segurança e Configuração de Upload de Imagens
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const dir = './uploads';
@@ -60,7 +67,7 @@ const upload = multer({
   fileFilter: fileFilter
 });
 
-// Configuração do PostgreSQL
+// --- CONFIGURAÇÃO DO BANCO DE DADOS (POSTGRESQL) ---
 const pool = new Pool({
   user: process.env.DB_USER || 'postgres',
   host: process.env.DB_HOST || 'localhost',
@@ -69,61 +76,31 @@ const pool = new Pool({
   port: process.env.DB_PORT || 5432,
 });
 
-// Criar tabelas se não existirem
-const initDB = async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS products (
-        id SERIAL PRIMARY KEY,
-        nome TEXT NOT NULL,
-        categoria TEXT NOT NULL,
-        imagem TEXT NOT NULL,
-        quantidade INTEGER NOT NULL,
-        status TEXT NOT NULL
-      )
-    `);
-
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS api_usage (
-        id INTEGER PRIMARY KEY,
-        remove_bg_count INTEGER DEFAULT 0
-      )
-    `);
-
-    // Insere o contador inicial se não existir (Sintaxe do Postgres)
-    await pool.query(`
-      INSERT INTO api_usage (id, remove_bg_count) 
-      VALUES (1, 0) 
-      ON CONFLICT (id) DO NOTHING
-    `);
-    console.log("Banco de dados PostgreSQL conectado e inicializado.");
-  } catch (err) {
-    console.error("Erro ao inicializar banco:", err);
+// Testa a conexão ao iniciar o servidor
+pool.connect((err) => {
+  if (err) {
+    console.error('❌ Erro ao conectar no PostgreSQL:', err.stack);
+  } else {
+    console.log('✅ Conectado ao banco de dados PostgreSQL com sucesso.');
   }
+});
+
+// Funções para controle de uso da API
+const getUsageCount = async () => {
+  const result = await pool.query('SELECT remove_bg_count FROM api_usage WHERE id = 1');
+  return result.rows.length > 0 ? result.rows[0].remove_bg_count : 0;
 };
-initDB();
 
-// Funções auxiliares para ler e atualizar o contador no banco
-const getUsageCount = () => new Promise((resolve, reject) => {
-  db.get('SELECT remove_bg_count FROM api_usage WHERE id = 1', (err, row) => {
-    if (err) reject(err);
-    else resolve(row ? row.remove_bg_count : 0);
-  });
-});
+const incrementUsageCount = async () => {
+  await pool.query('UPDATE api_usage SET remove_bg_count = remove_bg_count + 1 WHERE id = 1');
+};
 
-const incrementUsageCount = () => new Promise((resolve, reject) => {
-  db.run('UPDATE api_usage SET remove_bg_count = remove_bg_count + 1 WHERE id = 1', (err) => {
-    if (err) reject(err);
-    else resolve();
-  });
-});
-
-// --- ROTAS DE SEGURANÇA ---
+// --- ROTAS DE AUTENTICAÇÃO ---
 
 app.post('/api/login', loginLimiter, (req, res) => {
   const { username, password } = req.body;
   
-  if (username === 'admin' && password === SECRET_KEY) {
+  if (username === 'admin' && password === 'suasenhaforte123') {
     const token = jwt.sign({ user: username }, SECRET_KEY, { expiresIn: '24h' });
     res.json({ token });
   } else {
@@ -144,23 +121,31 @@ const verificarToken = (req, res, next) => {
   });
 };
 
-// --- ROTA DE PROCESSAMENTO DE IMAGEM (COM CONTADOR) ---
+// --- ROTAS DO REMOVE.BG ---
+
+app.get('/api/remove-bg/usage', verificarToken, async (req, res) => {
+  try {
+    const currentCount = await getUsageCount();
+    res.json({ used: currentCount, limit: LIMITE_FOTOS });
+  } catch (error) {
+    res.status(500).json({ error: 'Erro ao consultar uso' });
+  }
+});
+
 app.post('/api/remove-bg', verificarToken, upload.single('image_file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'Nenhuma imagem enviada.' });
     if (!REMOVE_BG_API_KEY) return res.status(500).json({ error: 'Chave API não configurada.' });
 
-    // 1. Verifica o contador antes de fazer a requisição
     const currentCount = await getUsageCount();
     
     if (currentCount >= LIMITE_FOTOS) {
       if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
       return res.status(403).json({ 
-        error: `Limite de ${LIMITE_FOTOS} remoções de fundo atingido. Atualize seu plano ou modifique o limite no servidor.` 
+        error: `Limite de ${LIMITE_FOTOS} remoções de fundo atingido.` 
       });
     }
 
-    // 2. Faz a requisição se estiver dentro do limite
     const fileBuffer = fs.readFileSync(req.file.path);
     const blob = new Blob([fileBuffer], { type: req.file.mimetype });
 
@@ -180,13 +165,11 @@ app.post('/api/remove-bg', verificarToken, upload.single('image_file'), async (r
       throw new Error(`Erro API: ${errorText}`);
     }
 
-    // 3. Imagem processada com sucesso! Atualiza o contador no banco
     await incrementUsageCount();
 
     const imageArrayBuffer = await removeBgResponse.arrayBuffer();
     fs.unlinkSync(req.file.path);
 
-    // Envia no cabeçalho quantas imagens ainda restam, caso você queira usar no frontend no futuro
     res.set('X-Remaining-Credits', String(LIMITE_FOTOS - (currentCount + 1)));
     res.set('Content-Type', 'image/png');
     res.send(Buffer.from(imageArrayBuffer));
@@ -198,78 +181,84 @@ app.post('/api/remove-bg', verificarToken, upload.single('image_file'), async (r
   }
 });
 
-// Rota para o frontend consultar o limite atual da API
-app.get('/api/remove-bg/usage', verificarToken, async (req, res) => {
+// --- ROTAS DE PRODUTOS ---
+
+app.get('/api/products', async (req, res) => {
   try {
-    const currentCount = await getUsageCount();
-    res.json({ used: currentCount, limit: LIMITE_FOTOS });
-  } catch (error) {
-    res.status(500).json({ error: 'Erro ao consultar uso' });
+    const result = await pool.query('SELECT * FROM products ORDER BY id DESC');
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Erro no servidor' }); 
   }
 });
 
-
-// --- ROTAS DO PRODUTO (Blindadas) ---
-
-app.get('/api/products', (req, res) => {
-  db.all('SELECT * FROM products ORDER BY id DESC', [], (err, rows) => {
-    if (err) return res.status(500).json({ error: 'Erro no servidor' }); 
-    res.json(rows);
-  });
-});
-
-app.post('/api/products', verificarToken, upload.single('imagemFile'), (req, res) => {
+app.post('/api/products', verificarToken, upload.single('imagemFile'), async (req, res) => {
   const { nome, categoria, quantidade, imagemUrl } = req.body;
   
   const qtdSanitizada = parseInt(quantidade) || 0; 
   const status = qtdSanitizada > 0 ? 'Disponível' : 'Esgotado';
   
-  let imagem = imagemUrl || '';
-  if (req.file) imagem = `http://localhost:3000/uploads/${req.file.filename}`;
+  // ATENÇÃO: Ao colocar em produção, mude 'http://localhost:3000' para 'https://api.seudominio.com.br'
+  const baseUrl = process.env.VITE_API_URL ? process.env.VITE_API_URL.replace('/api', '') : 'http://localhost:3000';
   
-  db.run(`INSERT INTO products (nome, categoria, imagem, quantidade, status) VALUES (?, ?, ?, ?, ?)`, 
-    [nome, categoria, imagem, qtdSanitizada, status], function(err) {
-    if (err) return res.status(500).json({ error: 'Erro ao inserir no banco de dados' });
-    res.status(201).json({ id: this.lastID });
-  });
+  let imagem = imagemUrl || '';
+  if (req.file) imagem = `${baseUrl}/uploads/${req.file.filename}`;
+  
+  try {
+    const result = await pool.query(
+      `INSERT INTO products (nome, categoria, imagem, quantidade, status) VALUES ($1, $2, $3, $4, $5) RETURNING id`, 
+      [nome, categoria, imagem, qtdSanitizada, status]
+    );
+    res.status(201).json({ id: result.rows[0].id });
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao inserir no banco de dados' });
+  }
 });
 
-app.put('/api/products/:id', verificarToken, upload.single('imagemFile'), (req, res) => {
+app.put('/api/products/:id', verificarToken, upload.single('imagemFile'), async (req, res) => {
   const { nome, categoria, quantidade, imagemUrl } = req.body;
-  
   const idSanitizado = parseInt(req.params.id);
+  
   if (isNaN(idSanitizado)) return res.status(400).json({ error: 'ID inválido' });
 
   const qtdSanitizada = parseInt(quantidade) || 0;
   const status = qtdSanitizada > 0 ? 'Disponível' : 'Esgotado';
-  let sql, params;
+  const baseUrl = process.env.VITE_API_URL ? process.env.VITE_API_URL.replace('/api', '') : 'http://localhost:3000';
 
-  if (req.file || imagemUrl) {
-    let imagem = imagemUrl || '';
-    if (req.file) imagem = `http://localhost:3000/uploads/${req.file.filename}`;
-    sql = `UPDATE products SET nome = ?, categoria = ?, quantidade = ?, status = ?, imagem = ? WHERE id = ?`;
-    params = [nome, categoria, qtdSanitizada, status, imagem, idSanitizado];
-  } else {
-    sql = `UPDATE products SET nome = ?, categoria = ?, quantidade = ?, status = ? WHERE id = ?`;
-    params = [nome, categoria, qtdSanitizada, status, idSanitizado];
-  }
-
-  db.run(sql, params, function(err) {
-    if (err) return res.status(500).json({ error: 'Erro ao atualizar o banco de dados' });
+  try {
+    if (req.file || imagemUrl) {
+      let imagem = imagemUrl || '';
+      if (req.file) imagem = `${baseUrl}/uploads/${req.file.filename}`;
+      
+      await pool.query(
+        `UPDATE products SET nome = $1, categoria = $2, quantidade = $3, status = $4, imagem = $5 WHERE id = $6`,
+        [nome, categoria, qtdSanitizada, status, imagem, idSanitizado]
+      );
+    } else {
+      await pool.query(
+        `UPDATE products SET nome = $1, categoria = $2, quantidade = $3, status = $4 WHERE id = $5`,
+        [nome, categoria, qtdSanitizada, status, idSanitizado]
+      );
+    }
     res.json({ message: "Atualizado" });
-  });
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao atualizar o banco de dados' });
+  }
 });
 
-app.delete('/api/products/:id', verificarToken, (req, res) => {
+app.delete('/api/products/:id', verificarToken, async (req, res) => {
   const idSanitizado = parseInt(req.params.id);
   if (isNaN(idSanitizado)) return res.status(400).json({ error: 'ID inválido' });
 
-  db.run('DELETE FROM products WHERE id = ?', idSanitizado, function(err) {
-    if (err) return res.status(500).json({ error: 'Erro ao deletar no banco de dados' });
+  try {
+    await pool.query('DELETE FROM products WHERE id = $1', [idSanitizado]);
     res.json({ message: "Removido" });
-  });
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao deletar no banco de dados' });
+  }
 });
 
+// Erros do multer (Tamanho de arquivo excedido, formato inválido, etc)
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError || err) {
     return res.status(400).json({ error: err.message });
@@ -277,4 +266,4 @@ app.use((err, req, res, next) => {
   next();
 });
 
-app.listen(PORT, () => console.log(`Backend ultra-seguro rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`Backend PostgreSQL rodando na porta ${PORT}`));
