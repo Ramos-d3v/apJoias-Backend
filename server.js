@@ -100,7 +100,7 @@ const incrementUsageCount = async () => {
 app.post('/api/login', loginLimiter, (req, res) => {
   const { username, password } = req.body;
   
-  if (username === 'admin' && password === 'suasenhaforte123') {
+  if (username === 'admin' && password === SECRET_KEY) {
     const token = jwt.sign({ user: username }, SECRET_KEY, { expiresIn: '24h' });
     res.json({ token });
   } else {
