@@ -199,7 +199,7 @@ app.post('/api/products', verificarToken, upload.single('imagemFile'), async (re
   const status = qtdSanitizada > 0 ? 'Disponível' : 'Esgotado';
   
   // ATENÇÃO: Ao colocar em produção, mude 'http://localhost:3000' para 'https://api.seudominio.com.br'
-  const baseUrl = process.env.VITE_API_URL ? process.env.VITE_API_URL.replace('/api', '') : 'http://localhost:3000';
+  const baseUrl = process.env.PUBLIC_URL || 'http://localhost:3005';
   
   let imagem = imagemUrl || '';
   if (req.file) imagem = `${baseUrl}/uploads/${req.file.filename}`;
@@ -264,6 +264,10 @@ app.use((err, req, res, next) => {
     return res.status(400).json({ error: err.message });
   }
   next();
+});
+
+app.get('/api', (req, res) => {
+  res.json({ mensagem: "API do ApJoias está rodando perfeitamente!" });
 });
 
 app.listen(PORT, () => console.log(`Backend PostgreSQL rodando na porta ${PORT}`));
