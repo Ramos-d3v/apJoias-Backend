@@ -235,26 +235,40 @@ app.put('/api/products/:id', verificarToken, upload.single('imagemFile'), async 
   const qtdSanitizada = parseInt(quantidade) || 0;
   const status = qtdSanitizada > 0 ? 'Disponível' : 'Esgotado';
 
-  let imagem = imagemUrl || ''; // Mantém a imagem anterior graças ao ajuste no Frontend
+  let imagem = imagemUrl || ''; 
 
-  try {
-    // Se enviou uma foto nova durante a edição, envia para o Cloudinary
-    if (req.file) {
+  // --- PASSO 1: Enviar imagem nova pro Cloudinary (se existir) ---
+  if (req.file) {
+    try {
       const result = await cloudinary.uploader.upload(req.file.path, { folder: 'apjoias' });
       imagem = result.secure_url;
       fs.unlinkSync(req.file.path);
+    } catch (imgErr) {
+      console.error("❌ Erro no Cloudinary:", imgErr);
+      return res.status(500).json({ error: 'Erro ao conectar com o Cloudinary. Verifique suas chaves e se reiniciou o servidor.' });
+    }
+  }
+
+  // --- PASSO 2: Atualizar banco de dados ---
+  try {
+    if (imagem !== '') {
+      // Atualiza incluindo a coluna de imagem
+      await pool.query(
+        `UPDATE products SET nome = $1, categoria = $2, quantidade = $3, status = $4, imagem = $5 WHERE id = $6`,
+        [nome, categoria, qtdSanitizada, status, imagem, idSanitizado]
+      );
+    } else {
+      // Se não tem imagem nova nem antiga, atualiza só o texto
+      await pool.query(
+        `UPDATE products SET nome = $1, categoria = $2, quantidade = $3, status = $4 WHERE id = $5`,
+        [nome, categoria, qtdSanitizada, status, idSanitizado]
+      );
     }
     
-    // Agora podemos usar apenas uma query de atualização simples
-    await pool.query(
-      `UPDATE products SET nome = $1, categoria = $2, quantidade = $3, status = $4, imagem = $5 WHERE id = $6`,
-      [nome, categoria, qtdSanitizada, status, imagem, idSanitizado]
-    );
-    
     res.json({ message: "Atualizado com sucesso" });
-  } catch (err) {
-    console.error("Erro ao atualizar:", err);
-    res.status(500).json({ error: 'Erro ao atualizar o banco de dados' });
+  } catch (dbErr) {
+    console.error("❌ Erro no PostgreSQL:", dbErr);
+    res.status(500).json({ error: 'Erro real no banco: ' + dbErr.message });
   }
 });
 
