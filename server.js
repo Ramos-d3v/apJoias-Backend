@@ -11,7 +11,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit'); 
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3005;
 
 const SECRET_KEY = process.env.SECRET_KEY;
 const REMOVE_BG_API_KEY = process.env.VITE_REMOVE_BG_API_KEY;
@@ -45,7 +45,7 @@ const loginLimiter = rateLimit({
 // 🛡️ Segurança e Configuração de Upload de Imagens
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const dir = './uploads';
+    const dir = path.join(__dirname,'./uploads');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir);
     cb(null, dir);
   },
