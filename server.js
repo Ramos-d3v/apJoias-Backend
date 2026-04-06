@@ -1,5 +1,4 @@
-const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
@@ -17,6 +16,12 @@ const PORT = process.env.PORT || 3005;
 
 const SECRET_KEY = process.env.SECRET_KEY;
 const REMOVE_BG_API_KEY = process.env.VITE_REMOVE_BG_API_KEY;
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
 
 // --- CONFIGURAÇÃO DO LIMITE DE FOTOS ---
 const LIMITE_FOTOS = 25; 
