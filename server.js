@@ -9,6 +9,7 @@ const fs = require('fs');
 const jwt = require('jsonwebtoken'); 
 const helmet = require('helmet'); 
 const rateLimit = require('express-rate-limit'); 
+const cloudinary = require('cloudinary').v2;
 
 const app = express();
 const PORT = process.env.PORT || 3005;
@@ -198,11 +199,21 @@ app.post('/api/products', verificarToken, upload.single('imagemFile'), async (re
   const qtdSanitizada = parseInt(quantidade) || 0; 
   const status = qtdSanitizada > 0 ? 'Disponível' : 'Esgotado';
   
-  // ATENÇÃO: Ao colocar em produção, mude 'http://localhost:3000' para 'https://api.seudominio.com.br'
-  const baseUrl = process.env.PUBLIC_URL || 'http://localhost:3005';
-  
   let imagem = imagemUrl || '';
-  if (req.file) imagem = `${baseUrl}/uploads/${req.file.filename}`;
+
+  // Se o usuário fez upload de um arquivo, envia para o Cloudinary
+  if (req.file) {
+    try {
+      const result = await cloudinary.uploader.upload(req.file.path, {
+        folder: 'apjoias' // Cria uma pasta lá no Cloudinary para organizar
+      });
+      imagem = result.secure_url; // Pega a URL definitiva gerada pelo Cloudinary
+      fs.unlinkSync(req.file.path); // Apaga a imagem da pasta /uploads local
+    } catch (error) {
+      console.error("Erro no Cloudinary:", error);
+      return res.status(500).json({ error: 'Erro ao enviar imagem para a nuvem.' });
+    }
+  }
   
   try {
     const result = await pool.query(
@@ -223,25 +234,26 @@ app.put('/api/products/:id', verificarToken, upload.single('imagemFile'), async 
 
   const qtdSanitizada = parseInt(quantidade) || 0;
   const status = qtdSanitizada > 0 ? 'Disponível' : 'Esgotado';
-  const baseUrl = process.env.VITE_API_URL ? process.env.VITE_API_URL.replace('/api', '') : 'http://localhost:3000';
+
+  let imagem = imagemUrl || ''; // Mantém a imagem anterior graças ao ajuste no Frontend
 
   try {
-    if (req.file || imagemUrl) {
-      let imagem = imagemUrl || '';
-      if (req.file) imagem = `${baseUrl}/uploads/${req.file.filename}`;
-      
-      await pool.query(
-        `UPDATE products SET nome = $1, categoria = $2, quantidade = $3, status = $4, imagem = $5 WHERE id = $6`,
-        [nome, categoria, qtdSanitizada, status, imagem, idSanitizado]
-      );
-    } else {
-      await pool.query(
-        `UPDATE products SET nome = $1, categoria = $2, quantidade = $3, status = $4 WHERE id = $5`,
-        [nome, categoria, qtdSanitizada, status, idSanitizado]
-      );
+    // Se enviou uma foto nova durante a edição, envia para o Cloudinary
+    if (req.file) {
+      const result = await cloudinary.uploader.upload(req.file.path, { folder: 'apjoias' });
+      imagem = result.secure_url;
+      fs.unlinkSync(req.file.path);
     }
-    res.json({ message: "Atualizado" });
+    
+    // Agora podemos usar apenas uma query de atualização simples
+    await pool.query(
+      `UPDATE products SET nome = $1, categoria = $2, quantidade = $3, status = $4, imagem = $5 WHERE id = $6`,
+      [nome, categoria, qtdSanitizada, status, imagem, idSanitizado]
+    );
+    
+    res.json({ message: "Atualizado com sucesso" });
   } catch (err) {
+    console.error("Erro ao atualizar:", err);
     res.status(500).json({ error: 'Erro ao atualizar o banco de dados' });
   }
 });
